@@ -132,7 +132,8 @@ class TextGenerationRequest(BaseModel):
     language: Optional[str] = "english"
     
 class VideoGenerationRequest(BaseModel):
-    repo_url: str # To identify project
+    repo_url: str
+    project_name: Optional[str] = None   # explicit name overrides URL-derived name
     voice: Optional[str] = "en-US-AriaNeural"
     style: Optional[str] = "dark"
 
@@ -209,12 +210,15 @@ async def generate_video(req: VideoGenerationRequest, background_tasks: Backgrou
     append_job_log(job_id, "Job queued for video generation.")
     
     params = {
-        "repo_url": req.repo_url, # Project name derived from this
+        "repo_url": req.repo_url,
         "video_mode": "only",
         "voice": req.voice,
-        "style": req.style
+        "style": req.style,
     }
-    
+    # Use explicit project_name if provided (avoids URL-derivation mismatch)
+    if req.project_name:
+        params["project_name"] = req.project_name
+
     background_tasks.add_task(worker_task, job_id, params)
     return {"job_id": job_id, "status": "queued"}
 

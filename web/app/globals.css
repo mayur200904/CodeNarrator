@@ -177,6 +177,75 @@
   }
 }
 
+@layer utilities {
+  /* Landing page utilities */
+  .landing-grid-bg {
+    background-image:
+      linear-gradient(rgba(43, 233, 255, 0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(43, 233, 255, 0.03) 1px, transparent 1px);
+    background-size: 60px 60px;
+  }
+
+  .shimmer-btn::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 40%, rgba(255,255,255,0.18) 50%, transparent 60%);
+    background-size: 200% 100%;
+    background-position: 200% 0;
+    transition: background-position 0.6s ease;
+    border-radius: inherit;
+  }
+  .shimmer-btn:hover::after {
+    background-position: -200% 0;
+  }
+
+  .marquee-track {
+    display: flex;
+    width: max-content;
+    animation: marquee-left 32s linear infinite;
+  }
+  .marquee-track-reverse {
+    display: flex;
+    width: max-content;
+    animation: marquee-right 36s linear infinite;
+  }
+
+  .text-gradient-accent {
+    background: linear-gradient(135deg, var(--color-accent) 0%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .glow-border {
+    box-shadow: 0 0 0 1px rgba(43, 233, 255, 0.25), 0 0 20px rgba(43, 233, 255, 0.08);
+  }
+  .glow-border:focus-within {
+    box-shadow: 0 0 0 1px rgba(43, 233, 255, 0.6), 0 0 30px rgba(43, 233, 255, 0.15);
+  }
+}
+
+@keyframes marquee-left {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@keyframes marquee-right {
+  from { transform: translateX(-50%); }
+  to   { transform: translateX(0); }
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px) rotate(0deg); }
+  33%  { transform: translateY(-12px) rotate(1deg); }
+  66%  { transform: translateY(-6px) rotate(-1deg); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px rgba(43,233,255,0.15); }
+  50%       { box-shadow: 0 0 40px rgba(43,233,255,0.35); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

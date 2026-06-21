@@ -47,9 +47,9 @@ def create_tutorial_flow(video_mode="none"): # modes: "none", "only"
     if video_mode == "only":
         # Video Only Flow: Load -> Script -> Visuals -> Audio -> Assemble
         load_existing >> generate_video_script
-        generate_video_script >> generate_visuals
-        generate_visuals >> generate_audio
-        generate_audio >> assemble_video
+        generate_video_script >> generate_audio
+        generate_audio >> generate_visuals
+        generate_visuals >> assemble_video
         
         tutorial_flow = Flow(start=load_existing)
         

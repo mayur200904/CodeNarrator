@@ -1,86 +1,152 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
+import { useEffect, useState } from "react"
 import { generateText } from "@/lib/api"
-import { Loader2 } from "lucide-react"
+import { Loader2, CheckCircle2, AlertCircle } from "lucide-react"
+import { motion } from "framer-motion"
 
-interface RepoFormProps {
-    onJobStarted: (jobId: string, repoUrl: string) => void
+const EXAMPLES = ["facebook/react", "vercel/next.js", "django/django"]
+
+const LANGUAGES = [
+  "english", "hindi", "spanish", "french", "german", "chinese", "japanese",
+]
+
+function isValidGithubUrl(url: string): boolean | null {
+  if (!url.trim()) return null
+  return /^(https?:\/\/)?(www\.)?github\.com\/[\w.-]+\/[\w.-]+(\/.*)?$/.test(url.trim())
 }
 
-export function RepoForm({ onJobStarted }: RepoFormProps) {
-    const [url, setUrl] = useState("")
-    const [loading, setLoading] = useState(false)
-    const [error, setError] = useState("")
+interface RepoFormProps {
+  onJobStarted: (jobId: string, repoUrl: string) => void
+  defaultUrl?: string
+}
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault()
-        setLoading(true)
-        setError("")
+export function RepoForm({ onJobStarted, defaultUrl }: RepoFormProps) {
+  const [url, setUrl]         = useState(defaultUrl ?? "")
+  const [loading, setLoading] = useState(false)
+  const [error, setError]     = useState("")
+  const [language, setLanguage] = useState("english")
 
-        try {
-            const data = await generateText(url, true)
-            onJobStarted(data.job_id, url)
-        } catch {
-            setError("Failed to start job. Ensure the backend is running.")
-        } finally {
-            setLoading(false)
-        }
+  useEffect(() => { if (defaultUrl) setUrl(defaultUrl) }, [defaultUrl])
+
+  const urlValid = isValidGithubUrl(url)
+
+  const handleExample = (repo: string) => {
+    setUrl(`https://github.com/${repo}`)
+    setError("")
+  }
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!url.trim()) return
+    setLoading(true)
+    setError("")
+    const finalUrl = url.trim().startsWith("http")
+      ? url.trim()
+      : `https://github.com/${url.trim()}`
+    try {
+      const data = await generateText(finalUrl, false, language)
+      onJobStarted(data.job_id, finalUrl)
+    } catch {
+      setError("Failed to start. Make sure the backend is running on port 8000.")
+    } finally {
+      setLoading(false)
     }
+  }
 
-    return (
-        <Card className="glass-panel w-full rounded-3xl border-white/15 bg-(--color-surface)/85 shadow-[0_26px_70px_rgba(0,0,0,0.45)]">
-            <CardHeader className="space-y-3 pb-4">
-                <CardTitle className="font-display text-3xl leading-tight text-white">
-                    Launch A New Narration Job
-                </CardTitle>
-                <CardDescription className="max-w-md text-sm leading-6 text-(--color-text-secondary)">
-                    Paste any public GitHub repository URL. We fetch structure, detect abstractions, and begin chapter generation in the background.
-                </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-5">
-                <form onSubmit={handleSubmit} className="space-y-4">
-                    <label className="block space-y-2">
-                        <span className="text-xs uppercase tracking-[0.16em] text-(--color-text-secondary)">Repository URL</span>
-                        <Input
-                            type="url"
-                            name="repositoryUrl"
-                            autoComplete="url"
-                            inputMode="url"
-                            spellCheck={false}
-                            placeholder="https://github.com/username/repo"
-                            value={url}
-                            onChange={(e) => setUrl(e.target.value)}
-                            className="h-12 rounded-xl border-white/15 bg-black/30 text-base text-white placeholder:text-(--color-text-secondary) focus-visible:ring-(--color-accent)"
-                        />
-                    </label>
+  return (
+    <div className="rounded-2xl border border-white/[0.1] bg-[#0d1117] overflow-hidden">
+      {/* Header */}
+      <div className="border-b border-white/[0.08] px-6 py-4">
+        <h2 className="font-display text-xl font-bold text-white">Generate Tutorial</h2>
+        <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
+          Paste any public GitHub repository URL to begin.
+        </p>
+      </div>
 
-                    {error && (
-                        <p aria-live="polite" className="rounded-xl border border-red-400/20 bg-red-950/35 px-3 py-2 text-sm text-red-300">
-                            {error}
-                        </p>
-                    )}
+      <form onSubmit={handleSubmit} className="p-6 space-y-4">
+        {/* URL input */}
+        <div className="space-y-1.5">
+          <label className="text-xs uppercase tracking-widest text-[var(--color-text-secondary)]">
+            Repository URL
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              value={url}
+              onChange={(e) => { setUrl(e.target.value); setError("") }}
+              placeholder="https://github.com/username/repo"
+              spellCheck={false}
+              className={`w-full rounded-xl border bg-black/40 px-4 py-3 pr-10 text-sm text-white placeholder:text-white/25 outline-none transition-all duration-200 font-mono
+                ${urlValid === true
+                  ? "border-emerald-500/60 ring-1 ring-emerald-500/30"
+                  : urlValid === false
+                  ? "border-red-500/50 ring-1 ring-red-500/20"
+                  : "border-white/[0.12] focus:border-[var(--color-accent)]/50 focus:ring-1 focus:ring-[var(--color-accent)]/20"
+                }`}
+            />
+            {urlValid === true  && <CheckCircle2 className="absolute right-3 top-3.5 h-4 w-4 text-emerald-400" />}
+            {urlValid === false && <AlertCircle  className="absolute right-3 top-3.5 h-4 w-4 text-red-400" />}
+          </div>
+          {urlValid === false && (
+            <p className="text-xs text-red-400">Enter a valid GitHub URL</p>
+          )}
+        </div>
 
-                    <Button
-                        type="submit"
-                        disabled={loading || !url}
-                        className="h-12 w-full rounded-xl bg-(--color-accent) text-sm font-semibold uppercase tracking-[0.12em] text-(--color-bg) transition-all hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-55"
-                    >
-                        {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : "Start Generation"}
-                    </Button>
+        {/* Example chips */}
+        <div className="flex flex-wrap gap-2 items-center">
+          <span className="text-xs text-[var(--color-text-secondary)]">Try:</span>
+          {EXAMPLES.map((repo) => (
+            <button
+              key={repo} type="button"
+              onClick={() => handleExample(repo)}
+              className="rounded-full border border-white/[0.1] bg-white/[0.04] px-3 py-1 text-xs font-mono text-[var(--color-text-secondary)] hover:border-[var(--color-accent)]/40 hover:text-[var(--color-accent)] transition-colors"
+            >
+              {repo}
+            </button>
+          ))}
+        </div>
 
-                    <p className="text-xs text-(--color-text-secondary)">Example: https://github.com/pypa/sampleproject</p>
-                </form>
+        {/* Language selector */}
+        <div className="space-y-1.5">
+          <label className="text-xs uppercase tracking-widest text-[var(--color-text-secondary)]">
+            Language
+          </label>
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            className="w-full rounded-xl border border-white/[0.1] bg-[#0d1117] px-4 py-2.5 text-sm text-white outline-none focus:border-[var(--color-accent)]/50 transition-colors capitalize"
+          >
+            {LANGUAGES.map((l) => (
+              <option key={l} value={l} className="capitalize">
+                {l.charAt(0).toUpperCase() + l.slice(1)}
+              </option>
+            ))}
+          </select>
+        </div>
 
-                <div className="grid grid-cols-2 gap-3 text-xs text-(--color-text-secondary) sm:grid-cols-3">
-                    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">Realtime execution logs</div>
-                    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2">Progressive chapter output</div>
-                    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 sm:col-span-1 col-span-2">Optimized for large repositories</div>
-                </div>
-            </CardContent>
-        </Card>
-    )
+        {error && (
+          <motion.p
+            initial={{ opacity: 0, y: -4 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="rounded-xl border border-red-400/20 bg-red-950/30 px-3 py-2 text-sm text-red-300"
+          >
+            {error}
+          </motion.p>
+        )}
+
+        <button
+          type="submit"
+          disabled={loading || !url.trim()}
+          className="w-full rounded-xl bg-[var(--color-accent)] py-3 text-sm font-bold uppercase tracking-widest text-[#05050a] transition-all hover:brightness-110 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {loading ? (
+            <span className="flex items-center justify-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" /> Starting…
+            </span>
+          ) : "Generate Tutorial →"}
+        </button>
+      </form>
+    </div>
+  )
 }

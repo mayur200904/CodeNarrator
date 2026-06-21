@@ -6,17 +6,20 @@ export type JobLogEntry = {
     message: string;
 };
 
-export async function generateText(repoUrl: string, clean: boolean = false) {
+export async function generateText(repoUrl: string, clean: boolean = false, language: string = "english") {
     const res = await fetch(`${API_BASE}/api/generate/text`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_url: repoUrl, clean }),
+        body: JSON.stringify({ repo_url: repoUrl, clean, language }),
     });
     if (!res.ok) throw new Error("Failed to start text generation");
     return res.json();
 }
 
-export async function generateVideo(repoUrl: string, options: { voice?: string, style?: string } = {}) {
+export async function generateVideo(
+    repoUrl: string,
+    options: { voice?: string; style?: string; project_name?: string } = {}
+) {
     const res = await fetch(`${API_BASE}/api/generate/video`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },

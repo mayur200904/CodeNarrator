@@ -1,361 +1,488 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { getJobStatus, generateVideo, getJobLogs, getJobChapters, type JobLogEntry, API_BASE } from "@/lib/api"
+import { addToHistory } from "@/lib/history"
+import { getPrefs, savePrefs } from "@/lib/reading-progress"
 import { useRouter } from "next/navigation"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Progress } from "@/components/ui/progress"
-import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
+import { motion, AnimatePresence } from "framer-motion"
+import {
+  Loader2, CheckCircle2, FileText, PlayCircle, Video as VideoIcon,
+  GitBranch, BrainCircuit, BookOpen, Film, Layers, ExternalLink,
+  ChevronRight,
+} from "lucide-react"
 import { TerminalLogs } from "./terminal-logs"
-import { PlayCircle, FileText, CheckCircle2, Loader2, Video as VideoIcon } from "lucide-react"
 
-interface StatusTrackerProps {
-    jobId: string
-    repoUrl: string
-    onReset: () => void
+/* ── Pipeline stages ─────────────────────────────────────────── */
+const STAGES = [
+  { id: "fetch",     label: "Fetch Repo",       icon: GitBranch,    maxPct: 20  },
+  { id: "abstracts", label: "Identify Concepts", icon: BrainCircuit, maxPct: 35  },
+  { id: "analyze",  label: "Analyze Relations", icon: Layers,       maxPct: 50  },
+  { id: "write",    label: "Write Chapters",    icon: BookOpen,     maxPct: 90  },
+  { id: "done",     label: "Complete",          icon: Film,         maxPct: 100 },
+]
+
+function getActiveStage(pct: number): number {
+  for (let i = 0; i < STAGES.length; i++) {
+    if (pct <= STAGES[i].maxPct) return i
+  }
+  return STAGES.length - 1
 }
 
+/* ── Voice / Style pickers ───────────────────────────────────── */
+const VOICES = [
+  { id: "en-US-AriaNeural",  label: "Aria",  desc: "Female · Natural" },
+  { id: "en-US-GuyNeural",   label: "Guy",   desc: "Male · Clear" },
+  { id: "en-US-JennyNeural", label: "Jenny", desc: "Female · Friendly" },
+]
+const STYLES = [
+  { id: "dark",      label: "Dark",      color: "#1a1f35" },
+  { id: "light",     label: "Light",     color: "#f0f2ff" },
+  { id: "cyberpunk", label: "Cyberpunk", color: "#2d0045" },
+]
+
+/* ── Elapsed timer ───────────────────────────────────────────── */
+function useElapsed(running: boolean) {
+  const [secs, setSecs] = useState(0)
+  const ref = useRef<ReturnType<typeof setInterval> | null>(null)
+  useEffect(() => {
+    if (running) {
+      ref.current = setInterval(() => setSecs((s) => s + 1), 1000)
+    } else {
+      if (ref.current) clearInterval(ref.current)
+    }
+    return () => { if (ref.current) clearInterval(ref.current) }
+  }, [running])
+  const m = Math.floor(secs / 60).toString().padStart(2, "0")
+  const s = (secs % 60).toString().padStart(2, "0")
+  return `${m}:${s}`
+}
+
+/* ── Props ───────────────────────────────────────────────────── */
+interface StatusTrackerProps {
+  jobId: string
+  repoUrl: string
+  onReset: () => void
+}
+
+/* ── Component ───────────────────────────────────────────────── */
 export function StatusTracker({ jobId, repoUrl, onReset }: StatusTrackerProps) {
-    const router = useRouter()
-    const [status, setStatus] = useState("queued")
-    const [progress, setProgress] = useState<number>(10)
-    const [jobLogs, setJobLogs] = useState<JobLogEntry[]>([])
-    const [logSince, setLogSince] = useState<number>(0)
-    const [videoJobId, setVideoJobId] = useState<string | null>(null)
-    const [videoStatus, setVideoStatus] = useState<string | null>(null)
-    const [projectName, setProjectName] = useState<string | null>(null)
-    const [videoUrl, setVideoUrl] = useState<string | null>(null)
-    const [chapterFiles, setChapterFiles] = useState<string[]>([])
-    const [chapterTotal, setChapterTotal] = useState<number>(0)
-    const [chapterCompleted, setChapterCompleted] = useState<number>(0)
-    const [errorMessage, setErrorMessage] = useState<string | null>(null)
-    const [videoError, setVideoError] = useState<string | null>(null)
-    const [autoRedirectCancelled, setAutoRedirectCancelled] = useState(false)
-    const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null)
-    const hasNavigated = useRef(false)
+  const router = useRouter()
 
-    const inferredProjectName = useMemo(() => {
-        for (let i = jobLogs.length - 1; i >= 0; i -= 1) {
-            const message = jobLogs[i]?.message ?? ""
-            const match = message.match(/output\/([A-Za-z0-9._-]+)/)
-            if (match?.[1]) {
-                return match[1]
-            }
-        }
-        return null
-    }, [jobLogs])
+  const prefs = getPrefs()
+  const [status, setStatus]               = useState("queued")
+  const [progress, setProgress]           = useState(5)
+  const [jobLogs, setJobLogs]             = useState<JobLogEntry[]>([])
+  const [logSince, setLogSince]           = useState(0)
+  const [projectName, setProjectName]     = useState<string | null>(null)
+  const [chapterFiles, setChapterFiles]   = useState<string[]>([])
+  const [chapterTotal, setChapterTotal]   = useState(0)
+  const [chapterDone, setChapterDone]     = useState(0)
+  const [errorMsg, setErrorMsg]           = useState<string | null>(null)
+  const [videoJobId, setVideoJobId]       = useState<string | null>(null)
+  const [videoStatus, setVideoStatus]     = useState<string | null>(null)
+  const [videoUrl, setVideoUrl]           = useState<string | null>(null)
+  const [videoError, setVideoError]       = useState<string | null>(null)
+  const [voice, setVoice]                 = useState(prefs.voice)
+  const [vidStyle, setVidStyle]           = useState(prefs.style)
+  const [redirectCountdown, setRedirect]  = useState<number | null>(null)
+  const [cancelRedirect, setCancelRedirect] = useState(false)
+  const hasNavigated                        = useRef(false)
+  const historySaved                        = useRef(false)
 
-    const resolvedProjectName = projectName ?? inferredProjectName
-    const hasChapterOutput = chapterCompleted > 0 || chapterFiles.length > 0
+  const elapsed = useElapsed(status === "processing")
+  const activeStage = getActiveStage(progress)
 
-    useEffect(() => {
-        if (!jobId || status === "failed") return
+  /* ── chapter polling ──────────────────────────────────────── */
+  useEffect(() => {
+    if (!jobId || status === "failed") return
+    const iv = setInterval(async () => {
+      try {
+        const d = await getJobChapters(jobId)
+        setChapterFiles(d.chapter_files ?? [])
+        setChapterTotal(d.total_chapters ?? 0)
+        setChapterDone(d.completed_chapters ?? 0)
+        if (!projectName && d.project_name) setProjectName(d.project_name)
+      } catch { /* ignore */ }
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [jobId, status, projectName])
 
-        const interval = setInterval(async () => {
-            try {
-                const data = await getJobChapters(jobId)
-                setChapterFiles(data.chapter_files || [])
-                setChapterTotal(data.total_chapters || 0)
-                setChapterCompleted(data.completed_chapters || 0)
-                if (!projectName && data.project_name) {
-                    setProjectName(data.project_name)
-                }
-            } catch (e) {
-                console.error(e)
-            }
-        }, 2000)
+  /* ── job status polling ───────────────────────────────────── */
+  useEffect(() => {
+    if (!jobId || status === "completed" || status === "failed") return
+    const iv = setInterval(async () => {
+      try {
+        const d = await getJobStatus(jobId)
+        setStatus(d.status)
+        if (typeof d.progress === "number") setProgress(d.progress)
+        if (d.status === "completed" && d.result) setProjectName(d.result.project_name)
+        if (d.status === "failed") setErrorMsg(d.error ?? "Generation failed.")
+      } catch { /* ignore */ }
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [jobId, status])
 
-        return () => clearInterval(interval)
-    }, [jobId, status, projectName])
+  /* ── log polling ──────────────────────────────────────────── */
+  useEffect(() => {
+    if (!jobId) return
+    const iv = setInterval(async () => {
+      try {
+        const d = await getJobLogs(jobId, logSince)
+        if (d.logs?.length) setJobLogs((p) => [...p, ...d.logs])
+        setLogSince(d.next_since ?? logSince)
+        if (typeof d.progress === "number") setProgress(d.progress)
+      } catch { /* ignore */ }
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [jobId, logSince])
 
-    // Poll for Text Job Status
-    useEffect(() => {
-        if (!jobId || status === "completed" || status === "failed") return
+  /* ── video polling ────────────────────────────────────────── */
+  useEffect(() => {
+    if (!videoJobId || videoStatus === "completed" || videoStatus === "failed") return
+    const iv = setInterval(async () => {
+      try {
+        const d = await getJobStatus(videoJobId)
+        setVideoStatus(d.status)
+        if (d.status === "completed" && projectName)
+          setVideoUrl(`${API_BASE}/output/${projectName}/tutorial.mp4?raw=1`)
+        if (d.status === "failed")
+          setVideoError(typeof d.error === "string" && d.error ? d.error : "Video generation failed.")
+      } catch { /* ignore */ }
+    }, 2000)
+    return () => clearInterval(iv)
+  }, [videoJobId, videoStatus, projectName])
 
-        const interval = setInterval(async () => {
-            try {
-                const data = await getJobStatus(jobId)
-                setStatus(data.status)
-                if (typeof data.progress === "number") {
-                    setProgress(data.progress)
-                }
-                if (data.status === "completed" && data.result) {
-                    setProjectName(data.result.project_name)
-                }
-                if (data.status === "failed") {
-                    setErrorMessage(typeof data.error === "string" ? data.error : "Generation failed before artifacts could be produced.")
-                }
-            } catch (e) { console.error(e) }
-        }, 2000)
-        return () => clearInterval(interval)
-    }, [jobId, status])
-
-    // Poll for Text Job Logs
-    useEffect(() => {
-        if (!jobId) return
-
-        const interval = setInterval(async () => {
-            try {
-                const data = await getJobLogs(jobId, logSince)
-                if (data.logs?.length) {
-                    setJobLogs(prev => [...prev, ...data.logs])
-                }
-                setLogSince(data.next_since || logSince)
-                if (typeof data.progress === "number") {
-                    setProgress(data.progress)
-                }
-            } catch (e) {
-                console.error(e)
-            }
-        }, 2000)
-
-        return () => clearInterval(interval)
-    }, [jobId, logSince])
-
-    // Poll for Video Job Status
-    useEffect(() => {
-        if (!videoJobId || videoStatus === "completed" || videoStatus === "failed") return
-
-        const interval = setInterval(async () => {
-            try {
-                const data = await getJobStatus(videoJobId)
-                setVideoStatus(data.status)
-                if (data.status === "completed" && resolvedProjectName) {
-                    setVideoUrl(`${API_BASE}/output/${resolvedProjectName}/tutorial.mp4`)
-                }
-            } catch (e) { console.error(e) }
-        }, 2000)
-        return () => clearInterval(interval)
-    }, [videoJobId, videoStatus, resolvedProjectName])
-
-    useEffect(() => {
-        if (status !== "completed" || !resolvedProjectName || !hasChapterOutput || autoRedirectCancelled || hasNavigated.current) return
-
-        const interval = setInterval(() => {
-            setRedirectCountdown((previous) => {
-                if (previous === null) return 7
-                return previous > 0 ? previous - 1 : 0
-            })
-        }, 1000)
-
-        return () => clearInterval(interval)
-    }, [status, resolvedProjectName, hasChapterOutput, autoRedirectCancelled])
-
-    useEffect(() => {
-        if (
-            status === "completed" &&
-            resolvedProjectName &&
-            !autoRedirectCancelled &&
-            hasChapterOutput &&
-            redirectCountdown === 0 &&
-            !hasNavigated.current
-        ) {
+  /* ── save history + redirect ──────────────────────────────── */
+  useEffect(() => {
+    if (status !== "completed" || !projectName || chapterFiles.length === 0) return
+    if (!historySaved.current) {
+      historySaved.current = true
+      addToHistory({ projectName, repoUrl, date: new Date().toISOString(), jobId })
+    }
+    if (cancelRedirect || hasNavigated.current) return
+    const iv = setInterval(() => {
+      setRedirect((p) => {
+        if (p === null) return 7
+        if (p <= 1) {
+          clearInterval(iv)
+          if (!hasNavigated.current) {
             hasNavigated.current = true
-            router.push(`/tutorial/${resolvedProjectName}`)
+            router.push(`/tutorial/${projectName}`)
+          }
+          return 0
         }
-    }, [status, resolvedProjectName, hasChapterOutput, autoRedirectCancelled, redirectCountdown, router])
+        return p - 1
+      })
+    }, 1000)
+    return () => clearInterval(iv)
+  }, [status, projectName, chapterFiles.length, cancelRedirect, router, repoUrl, jobId])
 
-    const handleGenerateVideo = async () => {
-        try {
-            setVideoError(null)
-            const data = await generateVideo(repoUrl, { voice: "en-US-GuyNeural", style: "cyberpunk" })
-            setVideoJobId(data.job_id)
-            setVideoStatus("queued")
-        } catch {
-            setVideoError("Failed to start video generation. Verify backend health and retry.")
-        }
+  const handleGenerateVideo = async () => {
+    if (!repoUrl) return
+    setVideoError(null)
+    savePrefs({ voice, style: vidStyle })
+    try {
+      const d = await generateVideo(repoUrl, {
+        voice,
+        style: vidStyle,
+        project_name: projectName ?? undefined,  // pass exact name to avoid URL-derivation mismatch
+      })
+      setVideoJobId(d.job_id)
+      setVideoStatus("queued")
+    } catch {
+      setVideoError("Failed to start video generation.")
     }
+  }
 
-    // Calculate Progress for UI
-    const getProgress = () => {
-        if (typeof progress === "number") return progress
-        if (status === "queued") return 10
-        if (status === "processing") return 45
-        if (status === "completed") return 100
-        return 0
-    }
+  const openTutorial = () => {
+    if (!projectName) return
+    hasNavigated.current = true
+    router.push(`/tutorial/${projectName}`)
+  }
 
-    const resolvedStatus = status === "processing" && getProgress() >= 100 ? "finalizing" : status
-    const outputReady = Boolean(resolvedProjectName && hasChapterOutput)
+  const outputReady = Boolean(projectName && chapterFiles.length > 0)
 
-    const openTutorial = () => {
-        if (!resolvedProjectName || !hasChapterOutput) return
-        hasNavigated.current = true
-        router.push(`/tutorial/${resolvedProjectName}`)
-    }
-
-    const openRawOutput = () => {
-        if (!resolvedProjectName || !hasChapterOutput) return
-        const opened = window.open(`${API_BASE}/output/${resolvedProjectName}/index.md`, "_blank", "noopener,noreferrer")
-        if (opened) opened.opener = null
-    }
-
-    return (
-        <div className="mx-auto w-full max-w-5xl space-y-6">
-            <Card className="glass-panel overflow-hidden rounded-3xl border-white/15 bg-(--color-surface)/90 text-white shadow-[0_28px_70px_rgba(0,0,0,0.45)]">
-                <CardHeader className="border-b border-white/10 bg-black/15 pb-5">
-                    <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                        <CardTitle className="flex items-center gap-3 text-2xl">
-                            {status === "processing" && <Loader2 className="h-5 w-5 animate-spin text-(--color-accent)" />}
-                            {status === "completed" && <CheckCircle2 className="h-5 w-5 text-emerald-400" />}
-                            Narration Pipeline
-                        </CardTitle>
-                        <Badge
-                            variant="secondary"
-                            className="w-fit rounded-full border border-white/20 bg-white/10 px-3 py-1 text-[10px] uppercase tracking-[0.16em] text-(--color-text-primary)"
-                        >
-                            {resolvedStatus}
-                        </Badge>
-                    </div>
-
-                    <div className="mt-1 grid gap-3 sm:grid-cols-3">
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-(--color-text-secondary)">
-                            <p className="uppercase tracking-[0.14em]">Job ID</p>
-                            <p className="mt-1 truncate font-mono text-[11px] text-white/85">{jobId}</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-(--color-text-secondary)">
-                            <p className="uppercase tracking-[0.14em]">Text Build</p>
-                            <p className="mt-1 text-sm font-semibold text-white">{getProgress()}%</p>
-                        </div>
-                        <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-(--color-text-secondary)">
-                            <p className="uppercase tracking-[0.14em]">Video</p>
-                            <p className="mt-1 text-sm font-semibold text-white">{videoStatus ?? "idle"}</p>
-                        </div>
-                    </div>
-                </CardHeader>
-
-                <CardContent className="space-y-6 p-5 sm:p-7">
-                    <div className="space-y-2">
-                        <div className="flex justify-between text-xs uppercase tracking-[0.14em] text-(--color-text-secondary)">
-                            <span>Text Tutorial Generation</span>
-                            <span>{getProgress()}%</span>
-                        </div>
-                        <Progress
-                            value={getProgress()}
-                            className="h-2 rounded-full bg-white/10"
-                            indicatorClassName="bg-gradient-to-r from-(--color-accent) via-cyan-300 to-(--color-accent-warm)"
-                        />
-                    </div>
-
-                    <p aria-live="polite" className="text-xs text-(--color-text-secondary)">
-                        {outputReady
-                            ? `Output ready for ${resolvedProjectName}.`
-                            : resolvedProjectName
-                                ? `Project detected (${resolvedProjectName}). Building first tutorial chapter...`
-                                : "Building output artifacts. Stay on this page for live updates."}
-                    </p>
-
-                    <div className="rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-(--color-text-secondary)">
-                        <p className="uppercase tracking-[0.14em]">Chapter Build</p>
-                        <p className="mt-1 text-sm font-semibold text-white">
-                            {chapterTotal > 0
-                                ? chapterCompleted > 0
-                                    ? `${chapterCompleted}/${chapterTotal} chapters ready`
-                                    : `0/${chapterTotal} chapters ready (first chapter in progress)`
-                                : "Preparing chapter plan..."}
-                        </p>
-                        {chapterFiles.length > 0 && (
-                            <p className="mt-1 truncate text-[11px] text-white/80">Latest: {chapterFiles[chapterFiles.length - 1]}</p>
-                        )}
-                    </div>
-
-                    <TerminalLogs status={status} logs={jobLogs} />
-
-                    {status === "failed" && (
-                        <div className="rounded-xl border border-red-400/25 bg-red-950/35 px-4 py-3 text-sm text-red-100">
-                            <p className="font-semibold">Generation failed.</p>
-                            <p className="mt-1 text-red-200/90">{errorMessage ?? "Check the execution logs for details, then start a new project."}</p>
-                        </div>
-                    )}
-
-                    {outputReady && (
-                        <div className="grid gap-3 pt-1 sm:grid-cols-2">
-                            <Button
-                                variant="outline"
-                                className="h-11 rounded-xl border-white/20 bg-black/20 text-(--color-text-primary) hover:bg-white/10"
-                                onClick={openTutorial}
-                            >
-                                <FileText className="mr-2 h-4 w-4 text-(--color-accent)" />
-                                Open Tutorial
-                            </Button>
-
-                            <Button
-                                variant="outline"
-                                className="h-11 rounded-xl border-white/20 bg-black/20 text-(--color-text-primary) hover:bg-white/10"
-                                onClick={openRawOutput}
-                            >
-                                Open Raw Output
-                            </Button>
-
-                            {status === "completed" && redirectCountdown !== null && !autoRedirectCancelled && hasChapterOutput && (
-                                <div className="col-span-full flex flex-wrap items-center justify-between gap-3 rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-3 text-sm">
-                                    <p className="text-cyan-100">
-                                        Redirecting to tutorial in {redirectCountdown ?? 8}s.
-                                    </p>
-                                    <Button
-                                        variant="outline"
-                                        className="h-8 rounded-lg border-cyan-200/40 bg-transparent text-cyan-100 hover:bg-cyan-500/15"
-                                        onClick={() => {
-                                            setAutoRedirectCancelled(true)
-                                        }}
-                                    >
-                                        Stay Here
-                                    </Button>
-                                </div>
-                            )}
-
-                            {!videoJobId ? (
-                                <Button
-                                    className="h-11 rounded-xl bg-(--color-accent) font-semibold text-(--color-bg) hover:brightness-110"
-                                    onClick={handleGenerateVideo}
-                                >
-                                    <VideoIcon className="mr-2 h-4 w-4" />
-                                    Generate AI Video
-                                </Button>
-                            ) : (
-                                <div className="flex items-center justify-between rounded-xl border border-white/15 bg-black/20 px-3 py-2 text-sm">
-                                    <span className="text-(--color-text-secondary)">Video: {videoStatus}</span>
-                                    {videoStatus === "processing" && <Loader2 className="h-4 w-4 animate-spin text-(--color-accent)" />}
-                                    {videoStatus === "completed" && videoUrl && (
-                                        <Button
-                                            size="sm"
-                                            className="h-8 rounded-lg bg-emerald-500 text-black hover:bg-emerald-400"
-                                            onClick={() => {
-                                                const opened = window.open(videoUrl, "_blank", "noopener,noreferrer")
-                                                if (opened) opened.opener = null
-                                            }}
-                                        >
-                                            <PlayCircle className="mr-1 h-4 w-4" /> Watch
-                                        </Button>
-                                    )}
-                                </div>
-                            )}
-
-                            {videoError && (
-                                <p aria-live="polite" className="col-span-full rounded-xl border border-red-400/20 bg-red-950/35 px-3 py-2 text-sm text-red-200">
-                                    {videoError}
-                                </p>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="border-t border-white/10 pt-4 text-center">
-                        <button
-                            onClick={onReset}
-                            className="text-xs uppercase tracking-[0.14em] text-(--color-text-secondary) transition-colors hover:text-white"
-                        >
-                            Start New Project
-                        </button>
-                    </div>
-                </CardContent>
-            </Card>
-
-            {videoStatus === "completed" && videoUrl && (
-                <Card className="glass-panel overflow-hidden rounded-2xl border-white/15 bg-black/30">
-                    <video controls className="aspect-video w-full" src={videoUrl} />
-                </Card>
+  return (
+    <div className="space-y-5">
+      {/* ── Pipeline card ────────────────────────────────────── */}
+      <div className="rounded-2xl border border-white/[0.1] bg-[#0d1117] overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between border-b border-white/[0.08] px-6 py-4">
+          <div className="flex items-center gap-3">
+            {status === "processing" && <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />}
+            {status === "completed"  && <CheckCircle2 className="h-4 w-4 text-emerald-400" />}
+            {status === "failed"     && <span className="h-4 w-4 text-red-400 font-bold text-sm">✕</span>}
+            {status === "queued"     && <div className="h-2 w-2 rounded-full bg-amber-400 animate-pulse" />}
+            <h2 className="font-semibold text-white text-sm">Narration Pipeline</h2>
+          </div>
+          <div className="flex items-center gap-3">
+            {status === "processing" && (
+              <span className="font-mono text-xs text-[var(--color-text-secondary)]">{elapsed}</span>
             )}
+            <span className={`rounded-full px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-widest border ${
+              status === "completed" ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" :
+              status === "failed"    ? "border-red-500/40 bg-red-500/10 text-red-300" :
+              status === "processing"? "border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 text-[var(--color-accent)]" :
+                                       "border-amber-400/40 bg-amber-400/10 text-amber-300"
+            }`}>
+              {status}
+            </span>
+          </div>
         </div>
-    )
+
+        <div className="px-6 py-5 space-y-6">
+          {/* ── Stage nodes ─────────────────────────────────── */}
+          <div className="relative">
+            {/* connector line */}
+            <div className="absolute top-5 left-5 right-5 h-px bg-white/[0.07]" />
+            <div
+              className="absolute top-5 left-5 h-px bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-warm)] transition-all duration-700"
+              style={{ width: `${Math.min(progress, 98)}%` }}
+            />
+            <div className="relative flex justify-between">
+              {STAGES.map((stage, i) => {
+                const done   = i < activeStage || status === "completed"
+                const active = i === activeStage && status !== "completed"
+                const Icon   = stage.icon
+                return (
+                  <div key={stage.id} className="flex flex-col items-center gap-2">
+                    <div className={`relative z-10 flex h-10 w-10 items-center justify-center rounded-full border transition-all duration-500 ${
+                      done   ? "border-emerald-500/60 bg-emerald-500/15 text-emerald-400" :
+                      active ? "border-[var(--color-accent)]/60 bg-[var(--color-accent)]/15 text-[var(--color-accent)]" :
+                               "border-white/[0.1] bg-[#0d1117] text-white/20"
+                    }`}>
+                      {done
+                        ? <CheckCircle2 className="h-4 w-4" />
+                        : active
+                          ? <Loader2 className="h-4 w-4 animate-spin" />
+                          : <Icon className="h-4 w-4" />
+                      }
+                    </div>
+                    <span className={`text-[10px] text-center max-w-[72px] leading-tight ${
+                      done || active ? "text-white" : "text-white/30"
+                    }`}>
+                      {stage.label}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* ── Chapter progress ─────────────────────────────── */}
+          {chapterTotal > 0 && (
+            <div className="space-y-1.5">
+              <div className="flex justify-between text-xs text-[var(--color-text-secondary)]">
+                <span className="uppercase tracking-widest">Chapters</span>
+                <span className="font-mono">{chapterDone} / {chapterTotal}</span>
+              </div>
+              <div className="h-1.5 rounded-full bg-white/[0.06] overflow-hidden">
+                <motion.div
+                  className="h-full rounded-full bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-warm)]"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.round((chapterDone / chapterTotal) * 100)}%` }}
+                  transition={{ duration: 0.6 }}
+                />
+              </div>
+            </div>
+          )}
+
+          {/* ── Terminal logs ─────────────────────────────────── */}
+          <TerminalLogs status={status} logs={jobLogs} />
+
+          {/* ── Error ─────────────────────────────────────────── */}
+          {status === "failed" && (
+            <div className="rounded-xl border border-red-400/25 bg-red-950/30 px-4 py-3 text-sm text-red-200">
+              <p className="font-semibold">Generation failed.</p>
+              <p className="mt-1 text-red-300/80">{errorMsg}</p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ── Chapter cards ────────────────────────────────────── */}
+      <AnimatePresence>
+        {chapterFiles.length > 0 && (
+          <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+            <p className="mb-3 text-xs uppercase tracking-widest text-[var(--color-text-secondary)]">
+              Ready Chapters
+            </p>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {chapterFiles.map((file, i) => {
+                const display = file.replace(/_/g, " ").replace(".md", "").replace(/^\d+\s+/, "")
+                return (
+                  <motion.a
+                    key={file}
+                    href={projectName ? `/tutorial/${projectName}` : undefined}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: i * 0.06 }}
+                    className="flex items-center gap-3 rounded-xl border border-white/[0.08] bg-[#0d1117] px-4 py-3 hover:border-[var(--color-accent)]/40 hover:bg-[var(--color-accent)]/5 transition-all group"
+                  >
+                    <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/20">
+                      <FileText className="h-3.5 w-3.5 text-[var(--color-accent)]" />
+                    </div>
+                    <span className="flex-1 truncate text-sm text-white capitalize">{display}</span>
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/20 group-hover:text-[var(--color-accent)] transition-colors" />
+                  </motion.a>
+                )
+              })}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Actions + Video ───────────────────────────────────── */}
+      {outputReady && (
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="space-y-4">
+          {/* Open tutorial */}
+          <div className="flex gap-3">
+            <button
+              onClick={openTutorial}
+              className="flex flex-1 items-center justify-center gap-2 rounded-xl bg-[var(--color-accent)] py-3 text-sm font-bold text-[#05050a] hover:brightness-110 transition-all"
+            >
+              <FileText className="h-4 w-4" /> Open Tutorial
+            </button>
+            <a
+              href={projectName ? `${API_BASE}/output/${projectName}/index.md` : undefined}
+              target="_blank" rel="noreferrer"
+              className="flex items-center gap-1.5 rounded-xl border border-white/[0.12] px-4 py-3 text-sm text-[var(--color-text-secondary)] hover:text-white hover:bg-white/[0.05] transition-all"
+            >
+              <ExternalLink className="h-4 w-4" /> Raw
+            </a>
+          </div>
+
+          {/* Redirect countdown */}
+          <AnimatePresence>
+            {redirectCountdown !== null && !cancelRedirect && (
+              <motion.div
+                initial={{ opacity: 0, height: 0 }}
+                animate={{ opacity: 1, height: "auto" }}
+                exit={{ opacity: 0, height: 0 }}
+                className="flex items-center justify-between rounded-xl border border-[var(--color-accent)]/25 bg-[var(--color-accent)]/8 px-4 py-3 text-sm"
+              >
+                <span className="text-[var(--color-accent)]">
+                  Redirecting to tutorial in <strong>{redirectCountdown}s</strong>
+                </span>
+                <button
+                  onClick={() => setCancelRedirect(true)}
+                  className="text-xs text-[var(--color-text-secondary)] hover:text-white transition-colors border border-white/20 rounded-lg px-3 py-1"
+                >
+                  Stay
+                </button>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Video generation panel */}
+          {!videoJobId ? (
+            <div className="rounded-2xl border border-white/[0.08] bg-[#0d1117] p-5 space-y-4">
+              <p className="text-xs font-semibold uppercase tracking-widest text-[var(--color-text-secondary)]">
+                Generate AI Video
+              </p>
+
+              {/* Voice picker */}
+              <div>
+                <p className="mb-2 text-xs text-white/40 uppercase tracking-widest">Voice</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {VOICES.map((v) => (
+                    <button key={v.id} type="button" onClick={() => setVoice(v.id)}
+                      className={`rounded-xl border px-3 py-2 text-left transition-all ${
+                        voice === v.id
+                          ? "border-[var(--color-accent)]/50 bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                          : "border-white/[0.08] text-[var(--color-text-secondary)] hover:border-white/20"
+                      }`}
+                    >
+                      <div className="text-xs font-semibold">{v.label}</div>
+                      <div className="text-[10px] opacity-60 mt-0.5">{v.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Style picker */}
+              <div>
+                <p className="mb-2 text-xs text-white/40 uppercase tracking-widest">Style</p>
+                <div className="grid grid-cols-3 gap-2">
+                  {STYLES.map((s) => (
+                    <button key={s.id} type="button" onClick={() => setVidStyle(s.id)}
+                      className={`flex items-center gap-2 rounded-xl border px-3 py-2 transition-all ${
+                        vidStyle === s.id
+                          ? "border-[var(--color-accent)]/50 bg-[var(--color-accent)]/10 text-[var(--color-accent)]"
+                          : "border-white/[0.08] text-[var(--color-text-secondary)] hover:border-white/20"
+                      }`}
+                    >
+                      <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: s.color }} />
+                      <span className="text-xs font-medium">{s.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={handleGenerateVideo}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-[var(--color-accent)] to-[var(--color-accent-warm)] py-3 text-sm font-bold text-[#05050a] hover:brightness-110 transition-all"
+              >
+                <VideoIcon className="h-4 w-4" /> Generate Video
+              </button>
+
+              {videoError && (
+                <p className="text-xs text-red-300 border border-red-400/20 bg-red-950/20 rounded-lg px-3 py-2">{videoError}</p>
+              )}
+            </div>
+          ) : videoStatus === "failed" ? (
+            /* ── Video failed — show error + retry ── */
+            <div className="rounded-2xl border border-red-500/25 bg-red-950/20 p-4 space-y-3">
+              <div className="flex items-center gap-2 text-sm text-red-300">
+                <span className="text-red-400 font-bold">✕</span>
+                Video generation failed
+              </div>
+              {videoError && (
+                <p className="text-xs text-red-300/70 leading-5">
+                  {videoError.length > 200 ? videoError.slice(0, 200) + "…" : videoError}
+                </p>
+              )}
+              <button
+                onClick={() => { setVideoJobId(null); setVideoStatus(null); setVideoError(null) }}
+                className="flex items-center gap-1.5 rounded-lg border border-white/[0.12] bg-white/[0.05] px-3 py-1.5 text-xs text-white hover:bg-white/[0.1] transition-colors"
+              >
+                <VideoIcon className="h-3.5 w-3.5" /> Try Again
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-between rounded-2xl border border-white/[0.08] bg-[#0d1117] px-5 py-4">
+              <div className="flex items-center gap-3">
+                {videoStatus === "processing" || videoStatus === "queued"
+                  ? <Loader2 className="h-4 w-4 animate-spin text-[var(--color-accent)]" />
+                  : <CheckCircle2 className="h-4 w-4 text-emerald-400" />
+                }
+                <span className="text-sm text-white">
+                  Video: <span className="text-[var(--color-text-secondary)]">{videoStatus}</span>
+                </span>
+              </div>
+              {videoStatus === "completed" && videoUrl && (
+                <a
+                  href={videoUrl} target="_blank" rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded-lg bg-emerald-500 px-3 py-1.5 text-xs font-bold text-black hover:bg-emerald-400 transition-colors"
+                >
+                  <PlayCircle className="h-3.5 w-3.5" /> Watch
+                </a>
+              )}
+            </div>
+          )}
+        </motion.div>
+      )}
+
+      {/* ── Reset ─────────────────────────────────────────────── */}
+      <div className="pt-2 text-center">
+        <button
+          onClick={onReset}
+          className="text-xs uppercase tracking-widest text-white/30 hover:text-white transition-colors"
+        >
+          ← Start New Project
+        </button>
+      </div>
+    </div>
+  )
 }

@@ -1,7 +1,8 @@
+from typing import Optional
 from urllib.parse import urlparse
 
 
-def derive_project_name(repo_url: str | None, fallback: str | None = None) -> str | None:
+def derive_project_name(repo_url: Optional[str], fallback: Optional[str] = None) -> Optional[str]:
     """Return a stable repository name from common HTTPS/SSH GitHub URLs."""
     if not repo_url:
         return fallback
