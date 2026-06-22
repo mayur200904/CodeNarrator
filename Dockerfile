@@ -34,6 +34,11 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Playwright's managed Chromium browser and Linux runtime deps.
+# Railway will prefer this Dockerfile when present, so the browser must be
+# downloaded here rather than only in nixpacks.toml.
+RUN python -m playwright install --with-deps chromium
+
 # Copy application code
 COPY . .
 
@@ -51,4 +56,4 @@ ENV PYTHONUNBUFFERED=1
 ENV PORT=7860
 
 # Run the application
-CMD ["uvicorn", "server.app:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["python", "start.py"]
